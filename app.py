@@ -462,7 +462,7 @@ def enviar_respaldo_async(datos, pdf_buffer):
 # =============================================================================
 # GENERACIÓN DE PDF
 # =============================================================================
-def generar_pdf(datos, imagen_firma, imagen_foto,):
+def generar_pdf(datos, imagen_firma, imagen_foto):
     buffer = BytesIO()
     p = canvas.Canvas(buffer, pagesize=letter)
     width, height = letter
