@@ -670,6 +670,87 @@ def subir_pdf_drive(pdf_buffer, nombre_archivo):
         st.session_state["drive_error_real"] = str(e)
         return None
 
+def reconstruir_firma_desde_json(json_data, width=350, height=180):
+    """
+    Dibuja la firma en una imagen PIL a partir de los objetos fabric.js
+    almacenados en canvas_res.json_data.  Funciona aunque image_data_url
+    esté vacío (RuntimeError en canvas_res.image_data).
+    """
+    from PIL import ImageDraw
+    import numpy as np
+    img = Image.new("RGBA", (width, height), (255, 255, 255, 255))
+    draw = ImageDraw.Draw(img)
+
+    if not json_data or not json_data.get("objects"):
+        return None
+
+    for obj in json_data["objects"]:
+        if obj.get("type") != "path":
+            continue
+
+        path_cmds = obj.get("path", [])
+        left  = float(obj.get("left",  0))
+        top   = float(obj.get("top",   0))
+        sw    = max(1, int(float(obj.get("strokeWidth", 3))))
+
+        hex_color = obj.get("stroke", "#1B5E20").lstrip("#")
+        try:
+            color = (
+                int(hex_color[0:2], 16),
+                int(hex_color[2:4], 16),
+                int(hex_color[4:6], 16),
+                255,
+            )
+        except Exception:
+            color = (0, 100, 0, 255)
+
+        pts = []
+        cx, cy = left, top
+
+        for cmd in path_cmds:
+            if not cmd:
+                continue
+            t = cmd[0]
+
+            if t == "M":
+                cx, cy = float(cmd[1]) + left, float(cmd[2]) + top
+                pts = [(cx, cy)]
+
+            elif t == "L":
+                x, y = float(cmd[1]) + left, float(cmd[2]) + top
+                pts.append((x, y))
+                cx, cy = x, y
+
+            elif t == "Q":
+                # Bezier cuadrático
+                qx, qy = float(cmd[1]) + left, float(cmd[2]) + top
+                ex, ey = float(cmd[3]) + left, float(cmd[4]) + top
+                for i in range(1, 9):
+                    s = i / 8.0
+                    bx = (1-s)**2 * cx + 2*(1-s)*s * qx + s**2 * ex
+                    by = (1-s)**2 * cy + 2*(1-s)*s * qy + s**2 * ey
+                    pts.append((bx, by))
+                cx, cy = ex, ey
+
+            elif t == "C":
+                # Bezier cúbico
+                c1x, c1y = float(cmd[1]) + left, float(cmd[2]) + top
+                c2x, c2y = float(cmd[3]) + left, float(cmd[4]) + top
+                ex,  ey  = float(cmd[5]) + left, float(cmd[6]) + top
+                for i in range(1, 9):
+                    s = i / 8.0
+                    bx = ((1-s)**3*cx + 3*(1-s)**2*s*c1x
+                          + 3*(1-s)*s**2*c2x + s**3*ex)
+                    by = ((1-s)**3*cy + 3*(1-s)**2*s*c1y
+                          + 3*(1-s)*s**2*c2y + s**3*ey)
+                    pts.append((bx, by))
+                cx, cy = ex, ey
+
+        if len(pts) >= 2:
+            draw.line(pts, fill=color, width=sw)
+
+    return img
+
 # =============================================================================
 # GENERACIÓN DE PDF
 # =============================================================================
@@ -1955,19 +2036,21 @@ if menu == "Registro Asistencia":
                 st.warning("Debe firmar antes de continuar.")
                 st.stop()
 
-            image_data = st.session_state.get("_firma_img")
+            # Reconstruir la imagen desde los trazos JSON (no depende de image_data_url)
+            image_data = reconstruir_firma_desde_json(canvas_res.json_data)
 
-            if image_data is None or image_data.ndim < 3 or image_data.shape[2] < 4:
+            if image_data is None:
                 st.warning("No fue posible leer la firma. Por favor, firme nuevamente.")
                 st.stop()
 
-            alpha = image_data[:, :, 3]
-
-            if int(alpha.sum()) < 3000:
+            import numpy as _np
+            _arr = _np.array(image_data)
+            _non_white = int(_np.sum(~_np.all(_arr[:, :, :3] == 255, axis=2)))
+            if _non_white < 500:
                 st.warning("Debe firmar antes de continuar.")
                 st.stop()
     
-            datos_asistencia = {
+                        datos_asistencia = {
                 "Fecha": datetime.now(pytz.timezone("America/Bogota")).strftime("%d/%m/%Y %H:%M:%S"),
                 "ID": st.session_state.cedula,
                 "Nombre": st.session_state.persona["Apellidos y Nombres"],
@@ -2012,15 +2095,11 @@ if menu == "Registro Asistencia":
                         except Exception as ex:
                             print(f"[FOTO ERROR] {ex}")
     
-                    # FIRMA PREPARADA
+                    # FIRMA PREPARADA (image_data ya es PIL RGBA desde reconstruir_firma_desde_json)
                     firma_img = None
-    
+
                     try:
-                        firma_rgba = Image.fromarray(
-                            image_data.astype("uint8"),
-                            "RGBA"
-                        )
-                        
+                        firma_rgba = image_data  # PIL Image RGBA
                         firma_img = Image.new("RGB", firma_rgba.size, "white")
                         firma_img.paste(firma_rgba, mask=firma_rgba.split()[3])
     
