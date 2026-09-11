@@ -1933,25 +1933,36 @@ if menu == "Registro Asistencia":
             width=350,
             key="firma_final"
         )
-    
+
+        # Capturar image_data en session_state mientras el canvas la envía
+        if not (canvas_res.json_data or {}).get("objects"):
+            st.session_state.pop("_firma_img", None)
+        else:
+            try:
+                _img_capturada = canvas_res.image_data
+                if (
+                    _img_capturada is not None
+                    and _img_capturada.ndim >= 3
+                    and _img_capturada.shape[2] >= 4
+                ):
+                    st.session_state["_firma_img"] = _img_capturada
+            except RuntimeError:
+                pass  # No disponible en este ciclo; se usará la captura anterior
+
         if st.button("ENVIAR ✅"):
-    
+
             if not (canvas_res.json_data or {}).get("objects"):
                 st.warning("Debe firmar antes de continuar.")
                 st.stop()
-    
-            try:
-                image_data = canvas_res.image_data
-            except RuntimeError:
-                st.warning("No fue posible leer la firma. Por favor, firme nuevamente.")
-                st.stop()
+
+            image_data = st.session_state.get("_firma_img")
 
             if image_data is None or image_data.ndim < 3 or image_data.shape[2] < 4:
                 st.warning("No fue posible leer la firma. Por favor, firme nuevamente.")
                 st.stop()
 
             alpha = image_data[:, :, 3]
-    
+
             if int(alpha.sum()) < 3000:
                 st.warning("Debe firmar antes de continuar.")
                 st.stop()
@@ -2006,7 +2017,7 @@ if menu == "Registro Asistencia":
     
                     try:
                         firma_rgba = Image.fromarray(
-                            canvas_res.image_data.astype("uint8"),
+                            image_data.astype("uint8"),
                             "RGBA"
                         )
                         
