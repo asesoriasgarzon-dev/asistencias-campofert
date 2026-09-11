@@ -505,6 +505,7 @@ def guardar_en_google_sheets(datos):
         }])
 
         # Reintento con delay aleatorio para evitar colisiones
+        _ultimo_error = None
         for intento in range(4):
             try:
                 actual = conn.read(worksheet="Hoja", ttl=0)
@@ -519,10 +520,12 @@ def guardar_en_google_sheets(datos):
                 leer_asistencias.clear()
                 return True
 
-            except Exception:
-                # Espera aleatoria entre 1 y 4 segundos antes de reintentar
+            except Exception as _e:
+                _ultimo_error = _e
                 time.sleep(random.uniform(1, 4))
 
+        # Si llegamos aquí, fallaron los 4 intentos
+        st.error(f"❌ Google Sheets falló tras 4 intentos. Error: {_ultimo_error}")
         return False
 
     except Exception as e:
