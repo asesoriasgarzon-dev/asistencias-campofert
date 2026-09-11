@@ -670,6 +670,52 @@ def subir_pdf_drive(pdf_buffer, nombre_archivo):
         st.session_state["drive_error_real"] = str(e)
         return None
 
+
+def preparar_firma_desde_canvas(canvas_result, width=350, height=180):
+    """
+    Obtiene la firma directamente de image_data de st_canvas.
+    Esto evita depender de las coordenadas internas de Fabric.js.
+    Devuelve una imagen PIL RGBA o None.
+    """
+    import numpy as _np_firma
+    from PIL import Image
+
+    try:
+        data = getattr(canvas_result, "image_data", None)
+
+        if data is None:
+            return None
+
+        arr = _np_firma.asarray(data)
+
+        if arr.size == 0:
+            return None
+
+        # Normalizar dimensiones/canales.
+        if arr.ndim == 2:
+            arr = _np_firma.stack([arr, arr, arr, _np_firma.full_like(arr, 255)], axis=-1)
+        elif arr.ndim == 3 and arr.shape[2] == 3:
+            alpha = _np_firma.full((arr.shape[0], arr.shape[1], 1), 255, dtype=arr.dtype)
+            arr = _np.concatenate([arr, alpha], axis=2)
+        elif arr.ndim != 3 or arr.shape[2] < 4:
+            return None
+
+        arr = arr[:, :, :4].astype("uint8")
+
+        # Si el lienzo es blanco, contar píxeles no blancos.
+        rgb = arr[:, :, :3]
+        non_white = int(_np_firma.sum(_np_firma.any(rgb < 245, axis=2)))
+
+        if non_white < 20:
+            return None
+
+        return Image.fromarray(arr, "RGBA")
+
+    except Exception as ex:
+        print(f"[FIRMA CANVAS] {ex}")
+        return None
+
+
 def reconstruir_firma_desde_json(json_data, width=350, height=180):
     """
     Reconstruye la firma desde json_data de fabric.js.
@@ -1848,6 +1894,8 @@ if menu == "Registro Asistencia":
         st.session_state.cedula    = None
         st.session_state.foto_data = None
         st.session_state.pdf_doc   = None
+        st.session_state.pop("_firma_img_persist", None)
+        st.session_state.pop("_firma_json_persist", None)
 
     # ─────────────────────────────────────────────────────────────────────────
     # PASO 0 → AUTORIZACIÓN DE USO DE IMAGEN  (NUEVO)
@@ -2005,40 +2053,61 @@ if menu == "Registro Asistencia":
         )
     
         canvas_res = st_canvas(
+            fill_color="rgba(255, 255, 255, 0)",
             stroke_width=3,
             stroke_color="#1B5E20",
             background_color="#ffffff",
             height=180,
             width=350,
+            drawing_mode="freedraw",
+            display_toolbar=True,
             key="firma_final"
         )
 
-        # Persistir json_data: cuando el usuario pulsa el botón, Streamlit
-        # rerranea ANTES de que el canvas reenvíe su estado, así que guardamos
-        # la última lectura válida como respaldo en session_state.
+        # PRINCIPAL: guardar la imagen ya renderizada por st_canvas.
+        # RESPALDO: conservar también json_data por si image_data no llega.
+        _firma_canvas_actual = preparar_firma_desde_canvas(canvas_res)
+
+        if _firma_canvas_actual is not None:
+            st.session_state["_firma_img_persist"] = _firma_canvas_actual
+
         _jd = canvas_res.json_data
         if _jd and _jd.get("objects"):
             st.session_state["_firma_json_persist"] = _jd
 
-        # DEBUG TEMPORAL — abrir para verificar datos del canvas
+        # DEBUG TEMPORAL
         with st.expander("🔍 Debug firma (temporal)", expanded=False):
-            st.write("json_data tiene objetos:", bool((_jd or {}).get("objects")))
-            st.write("session_state persist:", bool(st.session_state.get("_firma_json_persist")))
-            if _jd and _jd.get("objects"):
-                _obj0 = _jd["objects"][0]
-                st.write("left:", _obj0.get("left"), "  top:", _obj0.get("top"))
-                st.write("primeros 3 cmds path:", _obj0.get("path", [])[:3])
+            st.write(
+                "image_data actual:",
+                _firma_canvas_actual is not None
+            )
+            st.write(
+                "imagen persistida:",
+                st.session_state.get("_firma_img_persist") is not None
+            )
+            st.write(
+                "json_data actual:",
+                bool((_jd or {}).get("objects"))
+            )
+            st.write(
+                "json persistido:",
+                bool(st.session_state.get("_firma_json_persist"))
+            )
 
         if st.button("ENVIAR ✅"):
-            # Usar json_data actual o el persisted como respaldo
-            _json_firma = _jd if (_jd or {}).get("objects") else st.session_state.get("_firma_json_persist")
+            # 1) Preferir la imagen real renderizada por el canvas.
+            image_data = st.session_state.get("_firma_img_persist")
 
-            if not (_json_firma or {}).get("objects"):
-                st.warning("Debe firmar antes de continuar.")
-                st.stop()
+            if image_data is None:
+                image_data = preparar_firma_desde_canvas(canvas_res)
 
-            # Reconstruir la imagen desde los trazos JSON (adaptativo: prueba abs y rel)
-            image_data = reconstruir_firma_desde_json(_json_firma)
+            # 2) Si por alguna razón image_data no llegó, usar JSON como respaldo.
+            if image_data is None:
+                _json_firma = (
+                    _jd if (_jd or {}).get("objects")
+                    else st.session_state.get("_firma_json_persist")
+                )
+                image_data = reconstruir_firma_desde_json(_json_firma)
 
             if image_data is None:
                 st.warning("No fue posible leer la firma. Por favor, firme nuevamente.")
@@ -2046,8 +2115,9 @@ if menu == "Registro Asistencia":
 
             import numpy as _np
             _arr = _np.array(image_data)
-            _non_white = int(_np.sum(~_np.all(_arr[:, :, :3] == 255, axis=2)))
-            if _non_white < 50:
+            _non_white = int(_np.sum(_np.any(_arr[:, :, :3] < 245, axis=2)))
+
+            if _non_white < 20:
                 st.warning("Debe firmar antes de continuar.")
                 st.stop()
     
@@ -2311,7 +2381,8 @@ if menu == "Registro Asistencia":
 
         if st.button("Realizar otro registro", use_container_width=True):
             for key in ["cedula", "persona", "pdf_doc", "foto_data",
-                        "cedula_input", "firma_final", "correo_enviado"]:
+                        "cedula_input", "firma_final", "correo_enviado",
+                        "_firma_img_persist", "_firma_json_persist"]:
                 st.session_state.pop(key, None)
             st.session_state.paso   = 0
             st.session_state.modulo = "registro_asistencia"
