@@ -5,7 +5,7 @@ import io
 import pytz
 import qrcode
 import threading
-import random
+import randomh
 import plotly.express as px
 import time
 import zipfile
@@ -1936,7 +1936,7 @@ if menu == "Registro Asistencia":
     
         if st.button("ENVIAR ✅"):
     
-            if canvas_res.image_data is None:
+            if not (canvas_res.json_data or {}).get("objects"):
                 st.warning("Debe firmar antes de continuar.")
                 st.stop()
     
