@@ -505,6 +505,7 @@ def guardar_en_google_sheets(datos):
         }])
 
         # Reintento con delay aleatorio para evitar colisiones
+        _ultimo_error = None
         for intento in range(4):
             try:
                 actual = conn.read(worksheet="Hoja", ttl=0)
@@ -519,10 +520,12 @@ def guardar_en_google_sheets(datos):
                 leer_asistencias.clear()
                 return True
 
-            except Exception:
-                # Espera aleatoria entre 1 y 4 segundos antes de reintentar
+            except Exception as _e:
+                _ultimo_error = _e
                 time.sleep(random.uniform(1, 4))
 
+        # Si llegamos aquí, fallaron los 4 intentos
+        st.error(f"❌ Google Sheets falló tras 4 intentos. Error: {_ultimo_error}")
         return False
 
     except Exception as e:
@@ -669,6 +672,111 @@ def subir_pdf_drive(pdf_buffer, nombre_archivo):
     except Exception as e:
         st.session_state["drive_error_real"] = str(e)
         return None
+
+def reconstruir_firma_desde_json(json_data, width=350, height=180):
+    """
+    v4 — pinta píxeles con numpy (sin PIL draw.line).
+    Recolecta puntos de todos los path commands con y sin offset,
+    normaliza al canvas y devuelve imagen PIL. Garantiza resultado
+    si hay al menos 2 puntos válidos. Todo en try/except global.
+    """
+    try:
+        import numpy as _np
+        from PIL import Image as _PILImg
+
+        if not json_data or not json_data.get("objects"):
+            return None
+
+        all_pts = []
+
+        for obj in (json_data.get("objects") or []):
+            try:
+                if str(obj.get("type", "")).lower() != "path":
+                    continue
+                path_cmds = obj.get("path") or []
+                ox_base = float(obj.get("left") or 0)
+                oy_base = float(obj.get("top")  or 0)
+
+                for ox, oy in [(0.0, 0.0), (ox_base, oy_base)]:
+                    cx, cy = 0.0, 0.0
+                    for cmd in path_cmds:
+                        try:
+                            if not cmd:
+                                continue
+                            t = str(cmd[0]).upper()
+                            nums = []
+                            for v in cmd[1:]:
+                                try:
+                                    nums.append(float(v))
+                                except Exception:
+                                    nums.append(0.0)
+
+                            if t == "M" and len(nums) >= 2:
+                                cx, cy = nums[0]+ox, nums[1]+oy
+                                all_pts.append((cx, cy))
+                            elif t == "L" and len(nums) >= 2:
+                                cx, cy = nums[0]+ox, nums[1]+oy
+                                all_pts.append((cx, cy))
+                            elif t == "Q" and len(nums) >= 4:
+                                qx, qy = nums[0]+ox, nums[1]+oy
+                                ex, ey = nums[2]+ox, nums[3]+oy
+                                for i in range(1, 8):
+                                    s = i / 7.0
+                                    all_pts.append((
+                                        (1-s)**2*cx + 2*(1-s)*s*qx + s**2*ex,
+                                        (1-s)**2*cy + 2*(1-s)*s*qy + s**2*ey,
+                                    ))
+                                cx, cy = ex, ey
+                            elif t == "C" and len(nums) >= 6:
+                                c1x,c1y = nums[0]+ox, nums[1]+oy
+                                c2x,c2y = nums[2]+ox, nums[3]+oy
+                                ex,  ey = nums[4]+ox, nums[5]+oy
+                                for i in range(1, 8):
+                                    s = i / 7.0
+                                    all_pts.append((
+                                        (1-s)**3*cx+3*(1-s)**2*s*c1x+3*(1-s)*s**2*c2x+s**3*ex,
+                                        (1-s)**3*cy+3*(1-s)**2*s*c1y+3*(1-s)*s**2*c2y+s**3*ey,
+                                    ))
+                                cx, cy = ex, ey
+                        except Exception:
+                            continue
+            except Exception:
+                continue
+
+        if len(all_pts) < 2:
+            return None
+
+        xs = [p[0] for p in all_pts]
+        ys = [p[1] for p in all_pts]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        bw = max(max_x - min_x, 1.0)
+        bh = max(max_y - min_y, 1.0)
+        pad = 15
+        scale = min((width - 2*pad) / bw, (height - 2*pad) / bh)
+
+        arr = _np.full((height, width, 4), 255, dtype=_np.uint8)
+        verde = _np.array([0, 100, 0, 255], dtype=_np.uint8)
+        sw = 3
+
+        for px_pt, py_pt in all_pts:
+            xi = int((px_pt - min_x) * scale + pad)
+            yi = int((py_pt - min_y) * scale + pad)
+            for dy in range(-sw, sw + 1):
+                for dx in range(-sw, sw + 1):
+                    nx, ny = xi + dx, yi + dy
+                    if 0 <= nx < width and 0 <= ny < height:
+                        arr[ny, nx] = verde
+
+        non_white = int(_np.sum(~_np.all(arr[:, :, :3] == 255, axis=2)))
+        if non_white == 0:
+            return None
+
+        return _PILImg.fromarray(arr, 'RGBA')
+
+    except Exception:
+        return None
+
 
 # =============================================================================
 # GENERACIÓN DE PDF
@@ -1933,16 +2041,34 @@ if menu == "Registro Asistencia":
             width=350,
             key="firma_final"
         )
-    
+
+        # Persistir json_data: cuando el usuario pulsa el botón, Streamlit
+        # rerranea ANTES de que el canvas reenvíe su estado, así que guardamos
+        # la última lectura válida como respaldo en session_state.
+        _jd = canvas_res.json_data
+        if _jd and _jd.get("objects"):
+            st.session_state["_firma_json_persist"] = _jd
+
+        # DEBUG TEMPORAL — abrir para verificar datos del canvas
         if st.button("ENVIAR ✅"):
-    
-            if canvas_res.image_data is None:
+            # Usar json_data actual o el persisted como respaldo
+            _json_firma = _jd if (_jd or {}).get("objects") else st.session_state.get("_firma_json_persist")
+
+            if not (_json_firma or {}).get("objects"):
                 st.warning("Debe firmar antes de continuar.")
                 st.stop()
-    
-            alpha = canvas_res.image_data[:, :, 3]
-    
-            if int(alpha.sum()) < 3000:
+
+            # Reconstruir la imagen desde los trazos JSON (adaptativo: prueba abs y rel)
+            image_data = reconstruir_firma_desde_json(_json_firma)
+
+            if image_data is None:
+                st.warning("No fue posible leer la firma. Por favor, firme nuevamente.")
+                st.stop()
+
+            import numpy as _np
+            _arr = _np.array(image_data)
+            _non_white = int(_np.sum(~_np.all(_arr[:, :, :3] == 255, axis=2)))
+            if _non_white < 50:
                 st.warning("Debe firmar antes de continuar.")
                 st.stop()
     
@@ -1991,15 +2117,11 @@ if menu == "Registro Asistencia":
                         except Exception as ex:
                             print(f"[FOTO ERROR] {ex}")
     
-                    # FIRMA PREPARADA
+                    # FIRMA PREPARADA (image_data ya es PIL RGBA desde reconstruir_firma_desde_json)
                     firma_img = None
-    
+
                     try:
-                        firma_rgba = Image.fromarray(
-                            canvas_res.image_data.astype("uint8"),
-                            "RGBA"
-                        )
-                        
+                        firma_rgba = image_data  # PIL Image RGBA
                         firma_img = Image.new("RGB", firma_rgba.size, "white")
                         firma_img.paste(firma_rgba, mask=firma_rgba.split()[3])
     
@@ -2007,11 +2129,15 @@ if menu == "Registro Asistencia":
                         print(f"[FIRMA ERROR] {ex}")
                         
                     # PDF
-                    pdf = generar_pdf(
-                        datos_asistencia,
-                        firma_img,
-                        foto_comprimida,
-                    )
+                    try:
+                        pdf = generar_pdf(
+                            datos_asistencia,
+                            firma_img,
+                            foto_comprimida,
+                        )
+                    except Exception as _pdf_ex:
+                        st.error(f"❌ Error generando el certificado PDF: {_pdf_ex}")
+                        st.stop()
 
                 # ─────────────────────────────────────────────
                 # SUBIR PDF A GOOGLE DRIVE
@@ -2034,20 +2160,15 @@ if menu == "Registro Asistencia":
                     )
                 
                     if archivo_drive:
-                        st.success(f"✅ PDF subido a Drive correctamente: {nombre_pdf}")
                         datos_asistencia["LinkPDF"] = archivo_drive.get(
                             "webViewLink",
                             ""
                         )
-                
+                        print(f"✅ PDF subido a Drive: {nombre_pdf}")
                     else:
-                
-                        st.warning("⚠️ subir_pdf_drive() devolvió None — revisa permisos o folder ID.")
-                        if st.session_state.get("drive_error_real"):
-                            st.code(st.session_state["drive_error_real"])
+                        print("⚠️ subir_pdf_drive() devolvió None")
                 except Exception as ex:
-                
-                    st.error(f"❌ ERROR SUBIENDO A DRIVE: {ex}")
+                    print(f"❌ ERROR SUBIENDO A DRIVE: {ex}")
                 
                 # ─────────────────────────────────────────────
                 # PREPARAR PDF DEFINITIVO
@@ -2180,12 +2301,31 @@ if menu == "Registro Asistencia":
                 )
                 
                 # ─────────────────────────────────────────────
-                # SESSION STATE
+                # RESULTADO DIRECTO (sin rerun para mayor confiabilidad)
                 # ─────────────────────────────────────────────
                 st.session_state.pdf_doc = pdf_bytes
                 st.session_state.paso = 4
-                
-                st.rerun()
+
+                st.markdown("""
+                    <div style='background-color:#E8F5E9; border:2px solid #2E7D32;
+                                padding:20px; border-radius:10px; text-align:center;'>
+                        <h2 style='color:#1B5E20;'>¡Gracias por participar!</h2>
+                        <p>La respuesta se ha enviado correctamente.</p>
+                    </div>
+                """, unsafe_allow_html=True)
+                st.download_button(
+                    "⬇️ Descargar mi Certificado (PDF)",
+                    pdf_bytes,
+                    f"Certificado_{st.session_state.cedula}.pdf",
+                    "application/pdf",
+                    use_container_width=True
+                )
+                st.stop()
+
+            else:
+                st.error("❌ No se pudo guardar el registro en Google Sheets. Por favor intente nuevamente.")
+                st.stop()
+
                     # ─────────────────────────────────────────────────────────────────────────
     # PASO 4 → RESULTADO
     # ─────────────────────────────────────────────────────────────────────────
