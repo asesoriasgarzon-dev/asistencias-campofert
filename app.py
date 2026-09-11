@@ -2135,11 +2135,15 @@ if menu == "Registro Asistencia":
                         print(f"[FIRMA ERROR] {ex}")
                         
                     # PDF
-                    pdf = generar_pdf(
-                        datos_asistencia,
-                        firma_img,
-                        foto_comprimida,
-                    )
+                    try:
+                        pdf = generar_pdf(
+                            datos_asistencia,
+                            firma_img,
+                            foto_comprimida,
+                        )
+                    except Exception as _pdf_ex:
+                        st.error(f"❌ Error generando el certificado PDF: {_pdf_ex}")
+                        st.stop()
 
                 # ─────────────────────────────────────────────
                 # SUBIR PDF A GOOGLE DRIVE
@@ -2308,12 +2312,31 @@ if menu == "Registro Asistencia":
                 )
                 
                 # ─────────────────────────────────────────────
-                # SESSION STATE
+                # RESULTADO DIRECTO (sin rerun para mayor confiabilidad)
                 # ─────────────────────────────────────────────
                 st.session_state.pdf_doc = pdf_bytes
                 st.session_state.paso = 4
-                
-                st.rerun()
+
+                st.markdown("""
+                    <div style='background-color:#E8F5E9; border:2px solid #2E7D32;
+                                padding:20px; border-radius:10px; text-align:center;'>
+                        <h2 style='color:#1B5E20;'>¡Gracias por participar!</h2>
+                        <p>La respuesta se ha enviado correctamente.</p>
+                    </div>
+                """, unsafe_allow_html=True)
+                st.download_button(
+                    "⬇️ Descargar mi Certificado (PDF)",
+                    pdf_bytes,
+                    f"Certificado_{st.session_state.cedula}.pdf",
+                    "application/pdf",
+                    use_container_width=True
+                )
+                st.stop()
+
+            else:
+                st.error("❌ No se pudo guardar el registro en Google Sheets. Por favor intente nuevamente.")
+                st.stop()
+
                     # ─────────────────────────────────────────────────────────────────────────
     # PASO 4 → RESULTADO
     # ─────────────────────────────────────────────────────────────────────────
