@@ -5,7 +5,7 @@ import io
 import pytz
 import qrcode
 import threading
-import randomh
+import random
 import plotly.express as px
 import time
 import zipfile
