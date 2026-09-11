@@ -694,52 +694,51 @@ def reconstruir_firma_desde_json(json_data, width=350, height=180):
                 if str(obj.get("type", "")).lower() != "path":
                     continue
                 path_cmds = obj.get("path") or []
-                ox_base = float(obj.get("left") or 0)
-                oy_base = float(obj.get("top")  or 0)
+                ox = 0.0
+                oy = 0.0
 
-                for ox, oy in [(0.0, 0.0), (ox_base, oy_base)]:
-                    cx, cy = 0.0, 0.0
-                    for cmd in path_cmds:
-                        try:
-                            if not cmd:
-                                continue
-                            t = str(cmd[0]).upper()
-                            nums = []
-                            for v in cmd[1:]:
-                                try:
-                                    nums.append(float(v))
-                                except Exception:
-                                    nums.append(0.0)
-
-                            if t == "M" and len(nums) >= 2:
-                                cx, cy = nums[0]+ox, nums[1]+oy
-                                all_pts.append((cx, cy))
-                            elif t == "L" and len(nums) >= 2:
-                                cx, cy = nums[0]+ox, nums[1]+oy
-                                all_pts.append((cx, cy))
-                            elif t == "Q" and len(nums) >= 4:
-                                qx, qy = nums[0]+ox, nums[1]+oy
-                                ex, ey = nums[2]+ox, nums[3]+oy
-                                for i in range(1, 8):
-                                    s = i / 7.0
-                                    all_pts.append((
-                                        (1-s)**2*cx + 2*(1-s)*s*qx + s**2*ex,
-                                        (1-s)**2*cy + 2*(1-s)*s*qy + s**2*ey,
-                                    ))
-                                cx, cy = ex, ey
-                            elif t == "C" and len(nums) >= 6:
-                                c1x,c1y = nums[0]+ox, nums[1]+oy
-                                c2x,c2y = nums[2]+ox, nums[3]+oy
-                                ex,  ey = nums[4]+ox, nums[5]+oy
-                                for i in range(1, 8):
-                                    s = i / 7.0
-                                    all_pts.append((
-                                        (1-s)**3*cx+3*(1-s)**2*s*c1x+3*(1-s)*s**2*c2x+s**3*ex,
-                                        (1-s)**3*cy+3*(1-s)**2*s*c1y+3*(1-s)*s**2*c2y+s**3*ey,
-                                    ))
-                                cx, cy = ex, ey
-                        except Exception:
+                cx, cy = 0.0, 0.0
+                for cmd in path_cmds:
+                    try:
+                        if not cmd:
                             continue
+                        t = str(cmd[0]).upper()
+                        nums = []
+                        for v in cmd[1:]:
+                            try:
+                                nums.append(float(v))
+                            except Exception:
+                                nums.append(0.0)
+
+                        if t == "M" and len(nums) >= 2:
+                            cx, cy = nums[0]+ox, nums[1]+oy
+                            all_pts.append((cx, cy))
+                        elif t == "L" and len(nums) >= 2:
+                            cx, cy = nums[0]+ox, nums[1]+oy
+                            all_pts.append((cx, cy))
+                        elif t == "Q" and len(nums) >= 4:
+                            qx, qy = nums[0]+ox, nums[1]+oy
+                            ex, ey = nums[2]+ox, nums[3]+oy
+                            for i in range(1, 8):
+                                s = i / 7.0
+                                all_pts.append((
+                                    (1-s)**2*cx + 2*(1-s)*s*qx + s**2*ex,
+                                    (1-s)**2*cy + 2*(1-s)*s*qy + s**2*ey,
+                                ))
+                            cx, cy = ex, ey
+                        elif t == "C" and len(nums) >= 6:
+                            c1x,c1y = nums[0]+ox, nums[1]+oy
+                            c2x,c2y = nums[2]+ox, nums[3]+oy
+                            ex,  ey = nums[4]+ox, nums[5]+oy
+                            for i in range(1, 8):
+                                s = i / 7.0
+                                all_pts.append((
+                                    (1-s)**3*cx+3*(1-s)**2*s*c1x+3*(1-s)*s**2*c2x+s**3*ex,
+                                    (1-s)**3*cy+3*(1-s)**2*s*c1y+3*(1-s)*s**2*c2y+s**3*ey,
+                                ))
+                            cx, cy = ex, ey
+                    except Exception:
+                        continue
             except Exception:
                 continue
 
