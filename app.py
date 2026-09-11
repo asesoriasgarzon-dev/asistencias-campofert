@@ -2050,7 +2050,7 @@ if menu == "Registro Asistencia":
                 st.warning("Debe firmar antes de continuar.")
                 st.stop()
     
-                        datos_asistencia = {
+            datos_asistencia = {
                 "Fecha": datetime.now(pytz.timezone("America/Bogota")).strftime("%d/%m/%Y %H:%M:%S"),
                 "ID": st.session_state.cedula,
                 "Nombre": st.session_state.persona["Apellidos y Nombres"],
