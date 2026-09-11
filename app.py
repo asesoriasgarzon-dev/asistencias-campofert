@@ -1940,7 +1940,17 @@ if menu == "Registro Asistencia":
                 st.warning("Debe firmar antes de continuar.")
                 st.stop()
     
-            alpha = canvas_res.image_data[:, :, 3]
+            try:
+                image_data = canvas_res.image_data
+            except RuntimeError:
+                st.warning("No fue posible leer la firma. Por favor, firme nuevamente.")
+                st.stop()
+
+            if image_data is None or image_data.ndim < 3 or image_data.shape[2] < 4:
+                st.warning("No fue posible leer la firma. Por favor, firme nuevamente.")
+                st.stop()
+
+            alpha = image_data[:, :, 3]
     
             if int(alpha.sum()) < 3000:
                 st.warning("Debe firmar antes de continuar.")
