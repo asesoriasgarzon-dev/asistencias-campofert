@@ -672,12 +672,11 @@ def subir_pdf_drive(pdf_buffer, nombre_archivo):
 
 def reconstruir_firma_desde_json(json_data, width=350, height=180):
     """
-    Dibuja la firma en una imagen PIL a partir de los objetos fabric.js
-    almacenados en canvas_res.json_data.  Funciona aunque image_data_url
-    esté vacío (RuntimeError en canvas_res.image_data).
+    Reconstruye la firma desde json_data de fabric.js (streamlit-drawable-canvas).
+    Las coordenadas en 'path' son absolutas (posición real en el canvas), por lo
+    que NO se suma left/top — eso ya está embebido en los comandos SVG del trazo.
     """
     from PIL import ImageDraw
-    import numpy as np
     img = Image.new("RGBA", (width, height), (255, 255, 255, 255))
     draw = ImageDraw.Draw(img)
 
@@ -689,9 +688,7 @@ def reconstruir_firma_desde_json(json_data, width=350, height=180):
             continue
 
         path_cmds = obj.get("path", [])
-        left  = float(obj.get("left",  0))
-        top   = float(obj.get("top",   0))
-        sw    = max(1, int(float(obj.get("strokeWidth", 3))))
+        sw = max(1, int(float(obj.get("strokeWidth", 3))))
 
         hex_color = obj.get("stroke", "#1B5E20").lstrip("#")
         try:
@@ -705,7 +702,7 @@ def reconstruir_firma_desde_json(json_data, width=350, height=180):
             color = (0, 100, 0, 255)
 
         pts = []
-        cx, cy = left, top
+        cx, cy = 0.0, 0.0
 
         for cmd in path_cmds:
             if not cmd:
@@ -713,18 +710,19 @@ def reconstruir_firma_desde_json(json_data, width=350, height=180):
             t = cmd[0]
 
             if t == "M":
-                cx, cy = float(cmd[1]) + left, float(cmd[2]) + top
+                # Coordenadas absolutas — sin offset adicional
+                cx, cy = float(cmd[1]), float(cmd[2])
                 pts = [(cx, cy)]
 
             elif t == "L":
-                x, y = float(cmd[1]) + left, float(cmd[2]) + top
+                x, y = float(cmd[1]), float(cmd[2])
                 pts.append((x, y))
                 cx, cy = x, y
 
             elif t == "Q":
-                # Bezier cuadrático
-                qx, qy = float(cmd[1]) + left, float(cmd[2]) + top
-                ex, ey = float(cmd[3]) + left, float(cmd[4]) + top
+                # Bezier cuadrático: punto de control + punto final
+                qx, qy = float(cmd[1]), float(cmd[2])
+                ex, ey = float(cmd[3]), float(cmd[4])
                 for i in range(1, 9):
                     s = i / 8.0
                     bx = (1-s)**2 * cx + 2*(1-s)*s * qx + s**2 * ex
@@ -733,10 +731,10 @@ def reconstruir_firma_desde_json(json_data, width=350, height=180):
                 cx, cy = ex, ey
 
             elif t == "C":
-                # Bezier cúbico
-                c1x, c1y = float(cmd[1]) + left, float(cmd[2]) + top
-                c2x, c2y = float(cmd[3]) + left, float(cmd[4]) + top
-                ex,  ey  = float(cmd[5]) + left, float(cmd[6]) + top
+                # Bezier cúbico: dos puntos de control + punto final
+                c1x, c1y = float(cmd[1]), float(cmd[2])
+                c2x, c2y = float(cmd[3]), float(cmd[4])
+                ex,  ey  = float(cmd[5]), float(cmd[6])
                 for i in range(1, 9):
                     s = i / 8.0
                     bx = ((1-s)**3*cx + 3*(1-s)**2*s*c1x
@@ -750,6 +748,7 @@ def reconstruir_firma_desde_json(json_data, width=350, height=180):
             draw.line(pts, fill=color, width=sw)
 
     return img
+
 
 # =============================================================================
 # GENERACIÓN DE PDF
@@ -2046,7 +2045,7 @@ if menu == "Registro Asistencia":
             import numpy as _np
             _arr = _np.array(image_data)
             _non_white = int(_np.sum(~_np.all(_arr[:, :, :3] == 255, axis=2)))
-            if _non_white < 500:
+            if _non_white < 100:
                 st.warning("Debe firmar antes de continuar.")
                 st.stop()
     
