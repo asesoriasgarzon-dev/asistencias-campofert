@@ -672,110 +672,107 @@ def subir_pdf_drive(pdf_buffer, nombre_archivo):
 
 def reconstruir_firma_desde_json(json_data, width=350, height=180):
     """
-    Reconstruye la firma desde json_data de fabric.js.
-    Prueba múltiples sistemas de coordenadas y normaliza automáticamente
-    al lienzo destino si los puntos caen fuera de rango.
+    v4 — pinta píxeles con numpy (sin PIL draw.line).
+    Recolecta puntos de todos los path commands con y sin offset,
+    normaliza al canvas y devuelve imagen PIL. Garantiza resultado
+    si hay al menos 2 puntos válidos. Todo en try/except global.
     """
-    import numpy as _np_firma
-    from PIL import ImageDraw
+    try:
+        import numpy as _np
+        from PIL import Image as _PILImg
 
-    if not json_data or not json_data.get("objects"):
-        return None
+        if not json_data or not json_data.get("objects"):
+            return None
 
-    def _extraer_trazos(use_offset):
-        """Devuelve lista de (puntos, strokeWidth, color) para todos los objetos path."""
-        trazos = []
-        for obj in json_data["objects"]:
-            if obj.get("type") != "path":
-                continue
-            path_cmds = obj.get("path", [])
-            if not path_cmds:
-                continue
-            sw = max(1, int(float(obj.get("strokeWidth", 3))))
-            hex_color = obj.get("stroke", "#1B5E20").lstrip("#")
+        all_pts = []
+
+        for obj in (json_data.get("objects") or []):
             try:
-                color = (int(hex_color[0:2],16), int(hex_color[2:4],16), int(hex_color[4:6],16), 255)
+                if str(obj.get("type", "")).lower() != "path":
+                    continue
+                path_cmds = obj.get("path") or []
+                ox_base = float(obj.get("left") or 0)
+                oy_base = float(obj.get("top")  or 0)
+
+                for ox, oy in [(0.0, 0.0), (ox_base, oy_base)]:
+                    cx, cy = 0.0, 0.0
+                    for cmd in path_cmds:
+                        try:
+                            if not cmd:
+                                continue
+                            t = str(cmd[0]).upper()
+                            nums = []
+                            for v in cmd[1:]:
+                                try:
+                                    nums.append(float(v))
+                                except Exception:
+                                    nums.append(0.0)
+
+                            if t == "M" and len(nums) >= 2:
+                                cx, cy = nums[0]+ox, nums[1]+oy
+                                all_pts.append((cx, cy))
+                            elif t == "L" and len(nums) >= 2:
+                                cx, cy = nums[0]+ox, nums[1]+oy
+                                all_pts.append((cx, cy))
+                            elif t == "Q" and len(nums) >= 4:
+                                qx, qy = nums[0]+ox, nums[1]+oy
+                                ex, ey = nums[2]+ox, nums[3]+oy
+                                for i in range(1, 8):
+                                    s = i / 7.0
+                                    all_pts.append((
+                                        (1-s)**2*cx + 2*(1-s)*s*qx + s**2*ex,
+                                        (1-s)**2*cy + 2*(1-s)*s*qy + s**2*ey,
+                                    ))
+                                cx, cy = ex, ey
+                            elif t == "C" and len(nums) >= 6:
+                                c1x,c1y = nums[0]+ox, nums[1]+oy
+                                c2x,c2y = nums[2]+ox, nums[3]+oy
+                                ex,  ey = nums[4]+ox, nums[5]+oy
+                                for i in range(1, 8):
+                                    s = i / 7.0
+                                    all_pts.append((
+                                        (1-s)**3*cx+3*(1-s)**2*s*c1x+3*(1-s)*s**2*c2x+s**3*ex,
+                                        (1-s)**3*cy+3*(1-s)**2*s*c1y+3*(1-s)*s**2*c2y+s**3*ey,
+                                    ))
+                                cx, cy = ex, ey
+                        except Exception:
+                            continue
             except Exception:
-                color = (0, 100, 0, 255)
-            ox = float(obj.get("left", 0)) if use_offset else 0.0
-            oy = float(obj.get("top",  0)) if use_offset else 0.0
-            pts, cx, cy = [], 0.0, 0.0
-            for cmd in path_cmds:
-                if not cmd:
-                    continue
-                try:
-                    t = str(cmd[0]).upper()
-                    if t == "M" and len(cmd) >= 3:
-                        cx, cy = float(cmd[1]) + ox, float(cmd[2]) + oy
-                        pts.append((cx, cy))
-                    elif t == "L" and len(cmd) >= 3:
-                        x, y = float(cmd[1]) + ox, float(cmd[2]) + oy
-                        pts.append((x, y)); cx, cy = x, y
-                    elif t == "Q" and len(cmd) >= 5:
-                        qx, qy = float(cmd[1]) + ox, float(cmd[2]) + oy
-                        ex, ey = float(cmd[3]) + ox, float(cmd[4]) + oy
-                        for i in range(1, 10):
-                            s = i / 9.0
-                            pts.append(((1-s)**2*cx + 2*(1-s)*s*qx + s**2*ex,
-                                        (1-s)**2*cy + 2*(1-s)*s*qy + s**2*ey))
-                        cx, cy = ex, ey
-                    elif t == "C" and len(cmd) >= 7:
-                        c1x,c1y = float(cmd[1])+ox, float(cmd[2])+oy
-                        c2x,c2y = float(cmd[3])+ox, float(cmd[4])+oy
-                        ex,  ey = float(cmd[5])+ox, float(cmd[6])+oy
-                        for i in range(1, 10):
-                            s = i / 9.0
-                            pts.append(((1-s)**3*cx+3*(1-s)**2*s*c1x+3*(1-s)*s**2*c2x+s**3*ex,
-                                        (1-s)**3*cy+3*(1-s)**2*s*c1y+3*(1-s)*s**2*c2y+s**3*ey))
-                        cx, cy = ex, ey
-                except (ValueError, IndexError, TypeError):
-                    continue
-            if len(pts) >= 2:
-                trazos.append((pts, sw, color))
-        return trazos
+                continue
 
-    def _renderizar(trazos, normalizar=False):
-        if not trazos:
-            return None, 0
-        _img = Image.new("RGBA", (width, height), (255, 255, 255, 255))
-        _draw = ImageDraw.Draw(_img)
-        if normalizar:
-            todos = [p for pts,_,_ in trazos for p in pts]
-            min_x = min(p[0] for p in todos); max_x = max(p[0] for p in todos)
-            min_y = min(p[1] for p in todos); max_y = max(p[1] for p in todos)
-            bw = max(max_x - min_x, 1); bh = max(max_y - min_y, 1)
-            pad = 10
-            scale = min((width - 2*pad) / bw, (height - 2*pad) / bh)
-            def _tx(x, y):
-                return (int((x - min_x)*scale + pad), int((y - min_y)*scale + pad))
-        else:
-            def _tx(x, y):
-                return (int(x), int(y))
-        for pts, sw, color in trazos:
-            mapped = [_tx(x, y) for x, y in pts]
-            if len(mapped) >= 2:
-                _draw.line(mapped, fill=color, width=sw)
-        arr = _np_firma.array(_img)
-        non_white = int(_np_firma.sum(~_np_firma.all(arr[:,:,:3] == 255, axis=2)))
-        return _img, non_white
+        if len(all_pts) < 2:
+            return None
 
-    mejor_img, mejor_px = None, 0
-    for use_offset in [False, True]:
-        trazos = _extraer_trazos(use_offset)
-        if not trazos:
-            continue
-        # Intentar sin normalizar (coordenadas exactas)
-        img, px = _renderizar(trazos, normalizar=False)
-        if px > mejor_px:
-            mejor_px = px; mejor_img = img
-        # Intentar normalizando al canvas (garantiza resultado si hay trazos)
-        img, px = _renderizar(trazos, normalizar=True)
-        if px > mejor_px:
-            mejor_px = px; mejor_img = img
+        xs = [p[0] for p in all_pts]
+        ys = [p[1] for p in all_pts]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        bw = max(max_x - min_x, 1.0)
+        bh = max(max_y - min_y, 1.0)
+        pad = 15
+        scale = min((width - 2*pad) / bw, (height - 2*pad) / bh)
 
-    if mejor_px == 0 or mejor_img is None:
+        arr = _np.full((height, width, 4), 255, dtype=_np.uint8)
+        verde = _np.array([0, 100, 0, 255], dtype=_np.uint8)
+        sw = 3
+
+        for px_pt, py_pt in all_pts:
+            xi = int((px_pt - min_x) * scale + pad)
+            yi = int((py_pt - min_y) * scale + pad)
+            for dy in range(-sw, sw + 1):
+                for dx in range(-sw, sw + 1):
+                    nx, ny = xi + dx, yi + dy
+                    if 0 <= nx < width and 0 <= ny < height:
+                        arr[ny, nx] = verde
+
+        non_white = int(_np.sum(~_np.all(arr[:, :, :3] == 255, axis=2)))
+        if non_white == 0:
+            return None
+
+        return _PILImg.fromarray(arr, 'RGBA')
+
+    except Exception:
         return None
-    return mejor_img
 
 
 # =============================================================================
@@ -2051,6 +2048,7 @@ if menu == "Registro Asistencia":
 
         # DEBUG TEMPORAL — abrir para verificar datos del canvas
         with st.expander("🔍 Debug firma (temporal)", expanded=False):
+            st.caption("⚙️ VERSION: v4-numpy")
             st.write("json_data tiene objetos:", bool((_jd or {}).get("objects")))
             st.write("session_state persist:", bool(st.session_state.get("_firma_json_persist")))
             if _jd and _jd.get("objects"):
