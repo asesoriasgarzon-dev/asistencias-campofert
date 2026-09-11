@@ -672,82 +672,81 @@ def subir_pdf_drive(pdf_buffer, nombre_archivo):
 
 def reconstruir_firma_desde_json(json_data, width=350, height=180):
     """
-    Reconstruye la firma desde json_data de fabric.js (streamlit-drawable-canvas).
-    Las coordenadas en 'path' son absolutas (posición real en el canvas), por lo
-    que NO se suma left/top — eso ya está embebido en los comandos SVG del trazo.
+    Reconstruye la firma desde json_data de fabric.js.
+    Prueba coordenadas absolutas Y relativas (con left/top offset),
+    y devuelve automáticamente la que produce más píxeles dibujados.
     """
+    import numpy as _np_firma
     from PIL import ImageDraw
-    img = Image.new("RGBA", (width, height), (255, 255, 255, 255))
-    draw = ImageDraw.Draw(img)
 
     if not json_data or not json_data.get("objects"):
         return None
 
-    for obj in json_data["objects"]:
-        if obj.get("type") != "path":
-            continue
-
-        path_cmds = obj.get("path", [])
-        sw = max(1, int(float(obj.get("strokeWidth", 3))))
-
-        hex_color = obj.get("stroke", "#1B5E20").lstrip("#")
-        try:
-            color = (
-                int(hex_color[0:2], 16),
-                int(hex_color[2:4], 16),
-                int(hex_color[4:6], 16),
-                255,
-            )
-        except Exception:
-            color = (0, 100, 0, 255)
-
-        pts = []
-        cx, cy = 0.0, 0.0
-
-        for cmd in path_cmds:
-            if not cmd:
+    def _render(use_offset):
+        _img = Image.new("RGBA", (width, height), (255, 255, 255, 255))
+        _draw = ImageDraw.Draw(_img)
+        for obj in json_data["objects"]:
+            if obj.get("type") != "path":
                 continue
-            t = cmd[0]
+            path_cmds = obj.get("path", [])
+            sw = max(1, int(float(obj.get("strokeWidth", 3))))
+            ox = float(obj.get("left", 0)) if use_offset else 0.0
+            oy = float(obj.get("top",  0)) if use_offset else 0.0
+            hex_color = obj.get("stroke", "#1B5E20").lstrip("#")
+            try:
+                color = (
+                    int(hex_color[0:2], 16),
+                    int(hex_color[2:4], 16),
+                    int(hex_color[4:6], 16),
+                    255,
+                )
+            except Exception:
+                color = (0, 100, 0, 255)
+            pts, cx, cy = [], 0.0, 0.0
+            for cmd in path_cmds:
+                if not cmd:
+                    continue
+                t = cmd[0]
+                if t == "M":
+                    cx, cy = float(cmd[1]) + ox, float(cmd[2]) + oy
+                    pts = [(cx, cy)]
+                elif t == "L":
+                    x, y = float(cmd[1]) + ox, float(cmd[2]) + oy
+                    pts.append((x, y))
+                    cx, cy = x, y
+                elif t == "Q":
+                    qx, qy = float(cmd[1]) + ox, float(cmd[2]) + oy
+                    ex, ey = float(cmd[3]) + ox, float(cmd[4]) + oy
+                    for i in range(1, 9):
+                        s = i / 8.0
+                        pts.append((
+                            (1-s)**2 * cx + 2*(1-s)*s * qx + s**2 * ex,
+                            (1-s)**2 * cy + 2*(1-s)*s * qy + s**2 * ey,
+                        ))
+                    cx, cy = ex, ey
+                elif t == "C":
+                    c1x, c1y = float(cmd[1]) + ox, float(cmd[2]) + oy
+                    c2x, c2y = float(cmd[3]) + ox, float(cmd[4]) + oy
+                    ex,  ey  = float(cmd[5]) + ox, float(cmd[6]) + oy
+                    for i in range(1, 9):
+                        s = i / 8.0
+                        pts.append((
+                            (1-s)**3*cx + 3*(1-s)**2*s*c1x + 3*(1-s)*s**2*c2x + s**3*ex,
+                            (1-s)**3*cy + 3*(1-s)**2*s*c1y + 3*(1-s)*s**2*c2y + s**3*ey,
+                        ))
+                    cx, cy = ex, ey
+            if len(pts) >= 2:
+                _draw.line(pts, fill=color, width=sw)
+        return _img
 
-            if t == "M":
-                # Coordenadas absolutas — sin offset adicional
-                cx, cy = float(cmd[1]), float(cmd[2])
-                pts = [(cx, cy)]
+    img_abs = _render(False)
+    px_abs = int(_np_firma.sum(~_np_firma.all(_np_firma.array(img_abs)[:, :, :3] == 255, axis=2)))
+    img_rel = _render(True)
+    px_rel = int(_np_firma.sum(~_np_firma.all(_np_firma.array(img_rel)[:, :, :3] == 255, axis=2)))
 
-            elif t == "L":
-                x, y = float(cmd[1]), float(cmd[2])
-                pts.append((x, y))
-                cx, cy = x, y
-
-            elif t == "Q":
-                # Bezier cuadrático: punto de control + punto final
-                qx, qy = float(cmd[1]), float(cmd[2])
-                ex, ey = float(cmd[3]), float(cmd[4])
-                for i in range(1, 9):
-                    s = i / 8.0
-                    bx = (1-s)**2 * cx + 2*(1-s)*s * qx + s**2 * ex
-                    by = (1-s)**2 * cy + 2*(1-s)*s * qy + s**2 * ey
-                    pts.append((bx, by))
-                cx, cy = ex, ey
-
-            elif t == "C":
-                # Bezier cúbico: dos puntos de control + punto final
-                c1x, c1y = float(cmd[1]), float(cmd[2])
-                c2x, c2y = float(cmd[3]), float(cmd[4])
-                ex,  ey  = float(cmd[5]), float(cmd[6])
-                for i in range(1, 9):
-                    s = i / 8.0
-                    bx = ((1-s)**3*cx + 3*(1-s)**2*s*c1x
-                          + 3*(1-s)*s**2*c2x + s**3*ex)
-                    by = ((1-s)**3*cy + 3*(1-s)**2*s*c1y
-                          + 3*(1-s)*s**2*c2y + s**3*ey)
-                    pts.append((bx, by))
-                cx, cy = ex, ey
-
-        if len(pts) >= 2:
-            draw.line(pts, fill=color, width=sw)
-
-    return img
+    if px_abs == 0 and px_rel == 0:
+        return None
+    return img_abs if px_abs >= px_rel else img_rel
 
 
 # =============================================================================
@@ -2014,29 +2013,32 @@ if menu == "Registro Asistencia":
             key="firma_final"
         )
 
-        # Capturar image_data en session_state mientras el canvas la envía
-        if not (canvas_res.json_data or {}).get("objects"):
-            st.session_state.pop("_firma_img", None)
-        else:
-            try:
-                _img_capturada = canvas_res.image_data
-                if (
-                    _img_capturada is not None
-                    and _img_capturada.ndim >= 3
-                    and _img_capturada.shape[2] >= 4
-                ):
-                    st.session_state["_firma_img"] = _img_capturada
-            except RuntimeError:
-                pass  # No disponible en este ciclo; se usará la captura anterior
+        # Persistir json_data: cuando el usuario pulsa el botón, Streamlit
+        # rerranea ANTES de que el canvas reenvíe su estado, así que guardamos
+        # la última lectura válida como respaldo en session_state.
+        _jd = canvas_res.json_data
+        if _jd and _jd.get("objects"):
+            st.session_state["_firma_json_persist"] = _jd
+
+        # DEBUG TEMPORAL — abrir para verificar datos del canvas
+        with st.expander("🔍 Debug firma (temporal)", expanded=False):
+            st.write("json_data tiene objetos:", bool((_jd or {}).get("objects")))
+            st.write("session_state persist:", bool(st.session_state.get("_firma_json_persist")))
+            if _jd and _jd.get("objects"):
+                _obj0 = _jd["objects"][0]
+                st.write("left:", _obj0.get("left"), "  top:", _obj0.get("top"))
+                st.write("primeros 3 cmds path:", _obj0.get("path", [])[:3])
 
         if st.button("ENVIAR ✅"):
+            # Usar json_data actual o el persisted como respaldo
+            _json_firma = _jd if (_jd or {}).get("objects") else st.session_state.get("_firma_json_persist")
 
-            if not (canvas_res.json_data or {}).get("objects"):
+            if not (_json_firma or {}).get("objects"):
                 st.warning("Debe firmar antes de continuar.")
                 st.stop()
 
-            # Reconstruir la imagen desde los trazos JSON (no depende de image_data_url)
-            image_data = reconstruir_firma_desde_json(canvas_res.json_data)
+            # Reconstruir la imagen desde los trazos JSON (adaptativo: prueba abs y rel)
+            image_data = reconstruir_firma_desde_json(_json_firma)
 
             if image_data is None:
                 st.warning("No fue posible leer la firma. Por favor, firme nuevamente.")
@@ -2045,7 +2047,7 @@ if menu == "Registro Asistencia":
             import numpy as _np
             _arr = _np.array(image_data)
             _non_white = int(_np.sum(~_np.all(_arr[:, :, :3] == 255, axis=2)))
-            if _non_white < 100:
+            if _non_white < 50:
                 st.warning("Debe firmar antes de continuar.")
                 st.stop()
     
