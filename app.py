@@ -670,57 +670,11 @@ def subir_pdf_drive(pdf_buffer, nombre_archivo):
         st.session_state["drive_error_real"] = str(e)
         return None
 
-
-def preparar_firma_desde_canvas(canvas_result, width=350, height=180):
-    """
-    Obtiene la firma directamente de image_data de st_canvas.
-    Esto evita depender de las coordenadas internas de Fabric.js.
-    Devuelve una imagen PIL RGBA o None.
-    """
-    import numpy as _np_firma
-    from PIL import Image
-
-    try:
-        data = getattr(canvas_result, "image_data", None)
-
-        if data is None:
-            return None
-
-        arr = _np_firma.asarray(data)
-
-        if arr.size == 0:
-            return None
-
-        # Normalizar dimensiones/canales.
-        if arr.ndim == 2:
-            arr = _np_firma.stack([arr, arr, arr, _np_firma.full_like(arr, 255)], axis=-1)
-        elif arr.ndim == 3 and arr.shape[2] == 3:
-            alpha = _np_firma.full((arr.shape[0], arr.shape[1], 1), 255, dtype=arr.dtype)
-            arr = _np.concatenate([arr, alpha], axis=2)
-        elif arr.ndim != 3 or arr.shape[2] < 4:
-            return None
-
-        arr = arr[:, :, :4].astype("uint8")
-
-        # Si el lienzo es blanco, contar píxeles no blancos.
-        rgb = arr[:, :, :3]
-        non_white = int(_np_firma.sum(_np_firma.any(rgb < 245, axis=2)))
-
-        if non_white < 20:
-            return None
-
-        return Image.fromarray(arr, "RGBA")
-
-    except Exception as ex:
-        print(f"[FIRMA CANVAS] {ex}")
-        return None
-
-
 def reconstruir_firma_desde_json(json_data, width=350, height=180):
     """
     Reconstruye la firma desde json_data de fabric.js.
-    Prueba coordenadas absolutas Y relativas (con left/top offset),
-    y devuelve automáticamente la que produce más píxeles dibujados.
+    Prueba múltiples sistemas de coordenadas y normaliza automáticamente
+    al lienzo destino si los puntos caen fuera de rango.
     """
     import numpy as _np_firma
     from PIL import ImageDraw
@@ -728,71 +682,100 @@ def reconstruir_firma_desde_json(json_data, width=350, height=180):
     if not json_data or not json_data.get("objects"):
         return None
 
-    def _render(use_offset):
-        _img = Image.new("RGBA", (width, height), (255, 255, 255, 255))
-        _draw = ImageDraw.Draw(_img)
+    def _extraer_trazos(use_offset):
+        """Devuelve lista de (puntos, strokeWidth, color) para todos los objetos path."""
+        trazos = []
         for obj in json_data["objects"]:
             if obj.get("type") != "path":
                 continue
             path_cmds = obj.get("path", [])
+            if not path_cmds:
+                continue
             sw = max(1, int(float(obj.get("strokeWidth", 3))))
-            ox = float(obj.get("left", 0)) if use_offset else 0.0
-            oy = float(obj.get("top",  0)) if use_offset else 0.0
             hex_color = obj.get("stroke", "#1B5E20").lstrip("#")
             try:
-                color = (
-                    int(hex_color[0:2], 16),
-                    int(hex_color[2:4], 16),
-                    int(hex_color[4:6], 16),
-                    255,
-                )
+                color = (int(hex_color[0:2],16), int(hex_color[2:4],16), int(hex_color[4:6],16), 255)
             except Exception:
                 color = (0, 100, 0, 255)
+            ox = float(obj.get("left", 0)) if use_offset else 0.0
+            oy = float(obj.get("top",  0)) if use_offset else 0.0
             pts, cx, cy = [], 0.0, 0.0
             for cmd in path_cmds:
                 if not cmd:
                     continue
-                t = cmd[0]
-                if t == "M":
-                    cx, cy = float(cmd[1]) + ox, float(cmd[2]) + oy
-                    pts = [(cx, cy)]
-                elif t == "L":
-                    x, y = float(cmd[1]) + ox, float(cmd[2]) + oy
-                    pts.append((x, y))
-                    cx, cy = x, y
-                elif t == "Q":
-                    qx, qy = float(cmd[1]) + ox, float(cmd[2]) + oy
-                    ex, ey = float(cmd[3]) + ox, float(cmd[4]) + oy
-                    for i in range(1, 9):
-                        s = i / 8.0
-                        pts.append((
-                            (1-s)**2 * cx + 2*(1-s)*s * qx + s**2 * ex,
-                            (1-s)**2 * cy + 2*(1-s)*s * qy + s**2 * ey,
-                        ))
-                    cx, cy = ex, ey
-                elif t == "C":
-                    c1x, c1y = float(cmd[1]) + ox, float(cmd[2]) + oy
-                    c2x, c2y = float(cmd[3]) + ox, float(cmd[4]) + oy
-                    ex,  ey  = float(cmd[5]) + ox, float(cmd[6]) + oy
-                    for i in range(1, 9):
-                        s = i / 8.0
-                        pts.append((
-                            (1-s)**3*cx + 3*(1-s)**2*s*c1x + 3*(1-s)*s**2*c2x + s**3*ex,
-                            (1-s)**3*cy + 3*(1-s)**2*s*c1y + 3*(1-s)*s**2*c2y + s**3*ey,
-                        ))
-                    cx, cy = ex, ey
+                try:
+                    t = str(cmd[0]).upper()
+                    if t == "M" and len(cmd) >= 3:
+                        cx, cy = float(cmd[1]) + ox, float(cmd[2]) + oy
+                        pts.append((cx, cy))
+                    elif t == "L" and len(cmd) >= 3:
+                        x, y = float(cmd[1]) + ox, float(cmd[2]) + oy
+                        pts.append((x, y)); cx, cy = x, y
+                    elif t == "Q" and len(cmd) >= 5:
+                        qx, qy = float(cmd[1]) + ox, float(cmd[2]) + oy
+                        ex, ey = float(cmd[3]) + ox, float(cmd[4]) + oy
+                        for i in range(1, 10):
+                            s = i / 9.0
+                            pts.append(((1-s)**2*cx + 2*(1-s)*s*qx + s**2*ex,
+                                        (1-s)**2*cy + 2*(1-s)*s*qy + s**2*ey))
+                        cx, cy = ex, ey
+                    elif t == "C" and len(cmd) >= 7:
+                        c1x,c1y = float(cmd[1])+ox, float(cmd[2])+oy
+                        c2x,c2y = float(cmd[3])+ox, float(cmd[4])+oy
+                        ex,  ey = float(cmd[5])+ox, float(cmd[6])+oy
+                        for i in range(1, 10):
+                            s = i / 9.0
+                            pts.append(((1-s)**3*cx+3*(1-s)**2*s*c1x+3*(1-s)*s**2*c2x+s**3*ex,
+                                        (1-s)**3*cy+3*(1-s)**2*s*c1y+3*(1-s)*s**2*c2y+s**3*ey))
+                        cx, cy = ex, ey
+                except (ValueError, IndexError, TypeError):
+                    continue
             if len(pts) >= 2:
-                _draw.line(pts, fill=color, width=sw)
-        return _img
+                trazos.append((pts, sw, color))
+        return trazos
 
-    img_abs = _render(False)
-    px_abs = int(_np_firma.sum(~_np_firma.all(_np_firma.array(img_abs)[:, :, :3] == 255, axis=2)))
-    img_rel = _render(True)
-    px_rel = int(_np_firma.sum(~_np_firma.all(_np_firma.array(img_rel)[:, :, :3] == 255, axis=2)))
+    def _renderizar(trazos, normalizar=False):
+        if not trazos:
+            return None, 0
+        _img = Image.new("RGBA", (width, height), (255, 255, 255, 255))
+        _draw = ImageDraw.Draw(_img)
+        if normalizar:
+            todos = [p for pts,_,_ in trazos for p in pts]
+            min_x = min(p[0] for p in todos); max_x = max(p[0] for p in todos)
+            min_y = min(p[1] for p in todos); max_y = max(p[1] for p in todos)
+            bw = max(max_x - min_x, 1); bh = max(max_y - min_y, 1)
+            pad = 10
+            scale = min((width - 2*pad) / bw, (height - 2*pad) / bh)
+            def _tx(x, y):
+                return (int((x - min_x)*scale + pad), int((y - min_y)*scale + pad))
+        else:
+            def _tx(x, y):
+                return (int(x), int(y))
+        for pts, sw, color in trazos:
+            mapped = [_tx(x, y) for x, y in pts]
+            if len(mapped) >= 2:
+                _draw.line(mapped, fill=color, width=sw)
+        arr = _np_firma.array(_img)
+        non_white = int(_np_firma.sum(~_np_firma.all(arr[:,:,:3] == 255, axis=2)))
+        return _img, non_white
 
-    if px_abs == 0 and px_rel == 0:
+    mejor_img, mejor_px = None, 0
+    for use_offset in [False, True]:
+        trazos = _extraer_trazos(use_offset)
+        if not trazos:
+            continue
+        # Intentar sin normalizar (coordenadas exactas)
+        img, px = _renderizar(trazos, normalizar=False)
+        if px > mejor_px:
+            mejor_px = px; mejor_img = img
+        # Intentar normalizando al canvas (garantiza resultado si hay trazos)
+        img, px = _renderizar(trazos, normalizar=True)
+        if px > mejor_px:
+            mejor_px = px; mejor_img = img
+
+    if mejor_px == 0 or mejor_img is None:
         return None
-    return img_abs if px_abs >= px_rel else img_rel
+    return mejor_img
 
 
 # =============================================================================
@@ -1894,8 +1877,6 @@ if menu == "Registro Asistencia":
         st.session_state.cedula    = None
         st.session_state.foto_data = None
         st.session_state.pdf_doc   = None
-        st.session_state.pop("_firma_img_persist", None)
-        st.session_state.pop("_firma_json_persist", None)
 
     # ─────────────────────────────────────────────────────────────────────────
     # PASO 0 → AUTORIZACIÓN DE USO DE IMAGEN  (NUEVO)
@@ -2053,61 +2034,40 @@ if menu == "Registro Asistencia":
         )
     
         canvas_res = st_canvas(
-            fill_color="rgba(255, 255, 255, 0)",
             stroke_width=3,
             stroke_color="#1B5E20",
             background_color="#ffffff",
             height=180,
             width=350,
-            drawing_mode="freedraw",
-            display_toolbar=True,
             key="firma_final"
         )
 
-        # PRINCIPAL: guardar la imagen ya renderizada por st_canvas.
-        # RESPALDO: conservar también json_data por si image_data no llega.
-        _firma_canvas_actual = preparar_firma_desde_canvas(canvas_res)
-
-        if _firma_canvas_actual is not None:
-            st.session_state["_firma_img_persist"] = _firma_canvas_actual
-
+        # Persistir json_data: cuando el usuario pulsa el botón, Streamlit
+        # rerranea ANTES de que el canvas reenvíe su estado, así que guardamos
+        # la última lectura válida como respaldo en session_state.
         _jd = canvas_res.json_data
         if _jd and _jd.get("objects"):
             st.session_state["_firma_json_persist"] = _jd
 
-        # DEBUG TEMPORAL
+        # DEBUG TEMPORAL — abrir para verificar datos del canvas
         with st.expander("🔍 Debug firma (temporal)", expanded=False):
-            st.write(
-                "image_data actual:",
-                _firma_canvas_actual is not None
-            )
-            st.write(
-                "imagen persistida:",
-                st.session_state.get("_firma_img_persist") is not None
-            )
-            st.write(
-                "json_data actual:",
-                bool((_jd or {}).get("objects"))
-            )
-            st.write(
-                "json persistido:",
-                bool(st.session_state.get("_firma_json_persist"))
-            )
+            st.write("json_data tiene objetos:", bool((_jd or {}).get("objects")))
+            st.write("session_state persist:", bool(st.session_state.get("_firma_json_persist")))
+            if _jd and _jd.get("objects"):
+                _obj0 = _jd["objects"][0]
+                st.write("left:", _obj0.get("left"), "  top:", _obj0.get("top"))
+                st.write("primeros 3 cmds path:", _obj0.get("path", [])[:3])
 
         if st.button("ENVIAR ✅"):
-            # 1) Preferir la imagen real renderizada por el canvas.
-            image_data = st.session_state.get("_firma_img_persist")
+            # Usar json_data actual o el persisted como respaldo
+            _json_firma = _jd if (_jd or {}).get("objects") else st.session_state.get("_firma_json_persist")
 
-            if image_data is None:
-                image_data = preparar_firma_desde_canvas(canvas_res)
+            if not (_json_firma or {}).get("objects"):
+                st.warning("Debe firmar antes de continuar.")
+                st.stop()
 
-            # 2) Si por alguna razón image_data no llegó, usar JSON como respaldo.
-            if image_data is None:
-                _json_firma = (
-                    _jd if (_jd or {}).get("objects")
-                    else st.session_state.get("_firma_json_persist")
-                )
-                image_data = reconstruir_firma_desde_json(_json_firma)
+            # Reconstruir la imagen desde los trazos JSON (adaptativo: prueba abs y rel)
+            image_data = reconstruir_firma_desde_json(_json_firma)
 
             if image_data is None:
                 st.warning("No fue posible leer la firma. Por favor, firme nuevamente.")
@@ -2115,9 +2075,8 @@ if menu == "Registro Asistencia":
 
             import numpy as _np
             _arr = _np.array(image_data)
-            _non_white = int(_np.sum(_np.any(_arr[:, :, :3] < 245, axis=2)))
-
-            if _non_white < 20:
+            _non_white = int(_np.sum(~_np.all(_arr[:, :, :3] == 255, axis=2)))
+            if _non_white < 50:
                 st.warning("Debe firmar antes de continuar.")
                 st.stop()
     
@@ -2381,8 +2340,7 @@ if menu == "Registro Asistencia":
 
         if st.button("Realizar otro registro", use_container_width=True):
             for key in ["cedula", "persona", "pdf_doc", "foto_data",
-                        "cedula_input", "firma_final", "correo_enviado",
-                        "_firma_img_persist", "_firma_json_persist"]:
+                        "cedula_input", "firma_final", "correo_enviado"]:
                 st.session_state.pop(key, None)
             st.session_state.paso   = 0
             st.session_state.modulo = "registro_asistencia"
